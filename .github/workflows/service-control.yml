@@ -17,7 +17,7 @@ on:
           - start-data-services
           - stop-data-services
       region:
-        description: Must match Railway Settings > Deploy > Regions
+        description: Sole region for started services (other regions are removed; match database volumes)
         required: true
         default: eu-west
         type: choice
@@ -248,13 +248,40 @@ jobs:
           scale_services() {
             local replicas="$1"
             shift
+            local service region response
+            local -a assignments
+
+            case "$RAILWAY_REGION" in
+              southeast-asia|us-west|us-east|eu-west) ;;
+              *) echo "Unsupported Railway region: $RAILWAY_REGION" >&2; return 1 ;;
+            esac
 
             for service in "$@"; do
+              assignments=()
+              # Railway merges scale assignments with existing regions. Remove the
+              # other regions in the same patch so deployment never sees two regions.
+              for region in southeast-asia us-west us-east eu-west; do
+                if [[ "$region" == "$RAILWAY_REGION" ]]; then
+                  assignments+=("$region=$replicas")
+                else
+                  assignments+=("$region=0")
+                fi
+              done
               printf '\nScaling %s to %s replica(s) in %s...\n' "$service" "$replicas" "$RAILWAY_REGION"
-              railway scale \
-                "$RAILWAY_REGION=$replicas" \
+              response="$(railway scale \
+                "${assignments[@]}" \
                 --service "$service" \
-                --environment "$RAILWAY_ENVIRONMENT_NAME"
+                --environment "$RAILWAY_ENVIRONMENT_NAME" \
+                --json)" || return 1
+              printf '%s\n' "$response"
+              if ! jq -e --argjson replicas "$replicas" '
+                [.regions[]? | select(. != null and .numReplicas > 0)] as $active
+                | ($active | length) == (if $replicas > 0 then 1 else 0 end)
+                  and ([$active[].numReplicas] | add // 0) == $replicas
+              ' <<<"$response" >/dev/null; then
+                echo "Unexpected region/replica configuration for $service; refusing to redeploy." >&2
+                return 1
+              fi
             done
           }
 
