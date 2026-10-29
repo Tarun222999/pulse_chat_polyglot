@@ -125,11 +125,31 @@ jobs:
           test -n "$RAILWAY_PROJECT_ID" || (echo "Missing RAILWAY_PROJECT_ID" && exit 1)
           test -n "$RAILWAY_PROJECT_NAME" || (echo "Missing RAILWAY_PROJECT_NAME" && exit 1)
 
-      - name: Link Railway project
+      - name: Verify Railway token target
+        shell: bash
         run: |
-          railway link \
-            --project "$RAILWAY_PROJECT_ID" \
-            --environment "$RAILWAY_ENVIRONMENT_NAME"
+          set -euo pipefail
+
+          # Project tokens resolve their project/environment automatically.
+          # railway link lists user workspaces and requires account-level access.
+          if ! railway_status="$(railway status \
+            --environment "$RAILWAY_ENVIRONMENT_NAME" --json)"; then
+            echo "Unable to access Railway with RAILWAY_TOKEN. Check the production project token."
+            exit 1
+          fi
+
+          if ! jq -e \
+            --arg project "$RAILWAY_PROJECT_ID" \
+            --arg environment "$RAILWAY_ENVIRONMENT_NAME" \
+            '.id == $project
+             and (.environments.edges | length) == 1
+             and .environments.edges[0].node.name == $environment' \
+            <<<"$railway_status" >/dev/null; then
+            echo "RAILWAY_TOKEN does not target the configured project and environment."
+            exit 1
+          fi
+
+          echo "Verified Railway project token for the configured production target."
 
       - name: Verify Railway service dependencies
         shell: bash
